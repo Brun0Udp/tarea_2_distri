@@ -1,0 +1,176 @@
+# docker-compose.yml
+services:
+  kafka:
+    image: apache/kafka:4.0.1
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: yahoo_answers_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    depends_on:
+      - kafka
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d yahoo_answers_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  storage_api:
+    build:
+      context: .
+      dockerfile: ./storage_api/Dockerfile
+    container_name: storage_api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://user:password@postgres:5432/yahoo_answers_db
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC_IN:  resultados_validados
+      KAFKA_TOPIC_OUT: preguntas
+    ports:
+      - "8000:8000"
+    command: >
+      uvicorn main:app
+      --host 0.0.0.0
+      --port 8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  llm_worker:
+    container_name: llm_worker
+    build:
+      context: .
+      dockerfile: llm_worker/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_started
+    restart: unless-stopped
+    environment:
+      USE_REAL_LLM: "true"
+      LLM_PROVIDER: openai
+      OPENAI_API_KEY: "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"
+      OPENAI_MODEL: gpt-4o-mini
+      PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: "DEBUG"
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC_IN:  preguntas
+      KAFKA_TOPIC_OUT: llm_respuestas
+      KAFKA_GROUP_ID: worker_llm
+      KAFKA_RETRY_TOPIC: preguntas.retry
+      KAFKA_DLQ_TOPIC: dlq
+      GROUP_ID: worker_llm
+    command: ["python","-u","/app/worker.py"]
+
+  # ==== FLINK: agregado para satisfacer depends_on de flink_job ====
+  flink-jobmanager:
+    image: flink:1.18.1-scala_2.12
+    container_name: flink-jobmanager
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+    depends_on:
+      - kafka
+
+  flink-taskmanager:
+    image: flink:1.18.1-scala_2.12
+    container_name: flink-taskmanager
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 2
+    depends_on:
+      - flink-jobmanager
+  # === FIN FLINK ===
+
+  flink_job:
+    build:
+      context: .
+      dockerfile: ./flink_job/Dockerfile
+    container_name: flink_job
+    depends_on:
+      - flink-jobmanager
+      - flink-taskmanager
+      - kafka
+      - storage_api
+    command: python -u /app/job.py
+    environment:
+      # === Kafka ===
+      KAFKA_BOOTSTRAP: kafka:9092
+      GROUP_ID: flink_like_job_g1
+      AUTO_OFFSET_RESET: earliest
+      # === Tópicos que usa job.py ===
+      TOPIC_IN: llm_respuestas
+      TOPIC_PERSIST: resultados_validados
+      TOPIC_RETRY: preguntas
+      TOPIC_LLM_REQ: llm.requests
+      TOPIC_DLQ: dlq
+      # === Lógica ===
+      SCORE_THRESHOLD: "0.62"
+      MAX_SCORE_RETRIES: "2"
+      ENABLE_EXACT_COMMIT: "true"
+      STORAGE_API_URL: http://storage_api:8000
+    restart: unless-stopped
+
+  traffic_gen:
+    build:
+      context: .
+      dockerfile: ./traffic_gen/Dockerfile
+    container_name: traffic_gen
+    depends_on:
+      kafka:
+        condition: service_started
+      storage_api:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC_OUT: preguntas
+      STORAGE_API_URL: http://storage_api:8000
+      QPM: "20"
+      TOTAL_QUERIES: "100"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  kafka_data:
