@@ -1,12 +1,12 @@
 import os, json, time, random, sys
 from confluent_kafka import Consumer, Producer
-from schema import LLMResponseMsg  # asumo dataclass con id, question, answer, attempt
+from schema import LLMResponseMsg  
 
-# === Config desde entorno ===
+
 BOOTSTRAP      = os.getenv("KAFKA_BOOTSTRAP", "kafka:9092")
 GROUP_ID       = os.getenv("GROUP_ID", "worker_llm")
-IN_TOPIC       = os.getenv("KAFKA_TOPIC_IN", "preguntas")          # ← por defecto tu pipeline
-OUT_TOPIC      = os.getenv("KAFKA_TOPIC_OUT", "llm_respuestas")    # ← por defecto tu pipeline
+IN_TOPIC       = os.getenv("KAFKA_TOPIC_IN", "preguntas")          
+OUT_TOPIC      = os.getenv("KAFKA_TOPIC_OUT", "llm_respuestas")   
 RETRY_TOPIC    = os.getenv("KAFKA_RETRY_TOPIC", IN_TOPIC + ".retry")
 DLQ_TOPIC      = os.getenv("KAFKA_DLQ_TOPIC", "dlq")
 
@@ -20,7 +20,7 @@ cons = Consumer({
     "bootstrap.servers": BOOTSTRAP,
     "group.id": GROUP_ID,
     "auto.offset.reset": "earliest",
-    # "enable.auto.commit": True  # por defecto True
+  
 })
 
 cons.subscribe([IN_TOPIC])
@@ -32,9 +32,9 @@ def log(*args):
 def mock_llm_answer(question: str) -> str:
     r = random.random()
     if r < 0.10:
-        raise RuntimeError("overload")  # simula 429/503
+        raise RuntimeError("overload") 
     if r < 0.13:
-        raise RuntimeError("quota")     # simula sin cuota
+        raise RuntimeError("quota")    
     return f"Respuesta mock para: {question}"
 
 def call_real_llm(question: str) -> str:
@@ -50,11 +50,11 @@ def handle_retry(msg_value: dict, kind: str, attempt: int, max_attempts: int, ba
         producer.flush()
         log(f"DLQ ({kind}) id={msg_value.get('id')} attempt={attempt}")
         return
-    # backoff simple
+ 
     time.sleep(base_sleep)
     msg_value["attempt"] = attempt + 1
     msg_value["origin"] = kind
-    # reinyectamos a RETRY_TOPIC configurable (o al IN si prefieres)
+ 
     target = RETRY_TOPIC or IN_TOPIC
     producer.produce(target, json.dumps(msg_value).encode("utf-8"))
     producer.flush()
@@ -73,7 +73,7 @@ try:
         try:
             data = json.loads(msg.value().decode("utf-8"))
         except Exception as e:
-            # mensaje corrupto
+         
             producer.produce(DLQ_TOPIC, json.dumps({"raw": msg.value().decode("utf-8","ignore"), "error": "bad_json"}).encode("utf-8"))
             producer.flush()
             log("bad_json sent to DLQ")
@@ -81,7 +81,7 @@ try:
 
         q = data.get("question")
         if not q:
-            # no question → DLQ
+         
             data["error"] = "missing_question"
             producer.produce(DLQ_TOPIC, json.dumps(data).encode("utf-8"))
             producer.flush()
@@ -97,7 +97,7 @@ try:
                 "answer": answer,
                 "attempt": attempt
             }
-            # Si tu Flink espera otro shape, ajusta aquí
+
             producer.produce(OUT_TOPIC, json.dumps(out).encode("utf-8"))
             producer.flush()
             log(f"OK → {OUT_TOPIC} id={out['id']}")
@@ -113,7 +113,7 @@ try:
                 producer.flush()
                 log(f"unknown error → DLQ id={data.get('id')}")
         except Exception as e:
-            # errores no controlados del LLM
+            
             data["error"] = f"exception:{type(e).__name__}"
             producer.produce(DLQ_TOPIC, json.dumps(data).encode("utf-8"))
             producer.flush()

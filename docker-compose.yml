@@ -1,4 +1,4 @@
-# docker-compose.yml
+
 services:
   kafka:
     image: apache/kafka:4.0.1
@@ -99,7 +99,7 @@ services:
       GROUP_ID: worker_llm
     command: ["python","-u","/app/worker.py"]
 
-  # ==== FLINK: agregado para satisfacer depends_on de flink_job ====
+
   flink-jobmanager:
     image: flink:1.18.1-scala_2.12
     container_name: flink-jobmanager
@@ -122,7 +122,7 @@ services:
         taskmanager.numberOfTaskSlots: 2
     depends_on:
       - flink-jobmanager
-  # === FIN FLINK ===
+ 
 
   flink_job:
     build:
@@ -136,17 +136,17 @@ services:
       - storage_api
     command: python -u /app/job.py
     environment:
-      # === Kafka ===
+     
       KAFKA_BOOTSTRAP: kafka:9092
       GROUP_ID: flink_like_job_g1
       AUTO_OFFSET_RESET: earliest
-      # === Tópicos que usa job.py ===
+     
       TOPIC_IN: llm_respuestas
       TOPIC_PERSIST: resultados_validados
       TOPIC_RETRY: preguntas
       TOPIC_LLM_REQ: llm.requests
       TOPIC_DLQ: dlq
-      # === Lógica ===
+     
       SCORE_THRESHOLD: "0.62"
       MAX_SCORE_RETRIES: "2"
       ENABLE_EXACT_COMMIT: "true"

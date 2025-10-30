@@ -85,7 +85,7 @@ print("[RUN] Esperando mensajes...")
 try:
     while _running:
         msg = cons.poll(1.0)
-        prod.poll(0)  # sirve delivery reports en background
+        prod.poll(0)  
 
         if msg is None:
             continue
@@ -98,7 +98,7 @@ try:
         try:
             payload = json.loads(msg.value().decode("utf-8"))
         except Exception as e:
-            # si llega basura, mejor a DLQ con razón
+            
             prod.produce(
                 TOPIC_DLQ,
                 json.dumps({"raw": msg.value().decode("utf-8", "ignore"), "reason": "invalid_json", "error": str(e)}).encode("utf-8"),
@@ -106,17 +106,17 @@ try:
             )
             continue
 
-        # Campo id
+
         _id = _first(payload, ["id", "uuid", "msg_id"])
-        # Pregunta: acepta "question", "pregunta", "q"
+        
         q = _first(payload, ["question", "pregunta", "q"], "")
-        # Respuesta del LLM: "answer", "respuesta", "a", "text"
+ 
         ans = _first(payload, ["answer", "respuesta", "a", "text"], "")
-        # Intentos: "attempt", "intentos", "retries", "try"
+       
         attempts = int(_first(payload, ["attempt", "intentos", "retries", "try"], 0))
 
         if not _id or not q:
-            # Mensaje no usable -> DLQ
+       
             prod.produce(
                 TOPIC_DLQ,
                 json.dumps({"payload": payload, "reason": "missing_id_or_question"}).encode("utf-8"),
@@ -155,8 +155,7 @@ try:
                     "origin": "score_low",
                     "created_at": int(time() * 1000),
                 }
-                # opcional: un solo topic si tu pipeline vuelve a consumir desde ahí,
-                # o dos si separas "reintentar planificación" y "disparar LLM"
+               
                 prod.produce(TOPIC_RETRY, json.dumps(requeued).encode("utf-8"), callback=_dr)
                 prod.produce(TOPIC_LLM_REQ, json.dumps(requeued).encode("utf-8"), callback=_dr)
 

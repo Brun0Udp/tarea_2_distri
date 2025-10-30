@@ -26,7 +26,7 @@ async def health():
 
 @app.post("/query")
 async def query(q: QueryIn):
-    # 1) Buscar si ya existe con score
+  
     conn = await get_db()
     row = await conn.fetchrow("""
         SELECT id, question, answer_llm, score FROM qa_results
@@ -38,7 +38,7 @@ async def query(q: QueryIn):
     if row:
         return {"cached": True, "id": str(row["id"]), "answer": row["answer_llm"], "score": float(row["score"])}
 
-    # 2) Encolar para procesamiento
+
     msg = QuestionMsg.new(q.question)
     producer.produce("questions.new", json.dumps(msg.to_kv()).encode("utf-8"))
     producer.produce("llm.requests", json.dumps(msg.to_kv()).encode("utf-8"))
@@ -47,7 +47,7 @@ async def query(q: QueryIn):
 
 @app.post("/persist")
 async def persist(payload: dict):
-    # Consumido por Flink → publica aquí via Kafka Connect o llamado directo para simplificar demo:
+
     conn = await get_db()
     await conn.execute("""
         INSERT INTO qa_results (id, question, answer_llm, score, attempts)
